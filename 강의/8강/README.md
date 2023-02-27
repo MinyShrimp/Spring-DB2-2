@@ -552,6 +552,74 @@ Completing transaction for [hello.springdb22.apply.InternalCallV2Test$InternalSe
 
 ## 트랜잭션 AOP 주의 사항 - 초기화 시점
 
+스프링 초기화 시점에는 트랜잭션 AOP가 적용되지 않을 수 있다.
+
+### 예제
+
+#### initTxTest
+
+```java
+@SpringBootTest
+public class InitTxTest {
+
+    @Autowired
+    Hello hello;
+
+    @Test
+    void go() {
+        // 초기화 코드는 스프링이 초기화되는 시점에 호출한다.
+    }
+
+    @TestConfiguration
+    static class InitTxTestConfig {
+        @Bean
+        Hello hello() {
+            return new Hello();
+        }
+    }
+
+    @Slf4j
+    static class Hello {
+        @PostConstruct
+        @Transactional
+        public void initV1() {
+            boolean isActive = TransactionSynchronizationManager.isActualTransactionActive();
+            log.info("Hello init v1 @PostConstruct tx active = {}", isActive);
+        }
+
+        @EventListener(value = ApplicationReadyEvent.class)
+        @Transactional
+        public void initV2() {
+            boolean isActive = TransactionSynchronizationManager.isActualTransactionActive();
+            log.info("Hello init v2 @PostConstruct tx active = {}", isActive);
+        }
+    }
+}
+```
+
+#### 결과 로그
+
+```
+# init V1
+h.springdb22.apply.InitTxTest$Hello      : Hello init v1 @PostConstruct tx active = false
+
+# Test Start
+hello.springdb22.apply.InitTxTest        : Started InitTxTest in 1.088 seconds (process running for 1.808)
+
+# init V2
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.apply.InitTxTest$Hello.initV2]
+h.springdb22.apply.InitTxTest$Hello      : Hello init v2 @PostConstruct tx active = true
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.apply.InitTxTest$Hello.initV2]
+```
+
+* 초기화 코드(예: `@PostConstruct`)와 `@Transactional`을 함께 사용하면 트랜잭션이 적용되지 않는다.
+* 왜냐하면 **초기화 코드가 먼저 호출되고, 그 다음에 트랜잭션 AOP가 적용되기 때문**이다.
+    * 따라서 초기화 시점에는 해당 메서드에서 트랜잭션을 획득할 수 없다.
+
+* 가장 확실한 대안은 `ApplicationReadyEvent` 이벤트를 사용하는 것이다.
+* 이 이벤트는 트랜잭션 AOP를 포함한 스프링이 컨테이너가 완전히 생성되고 난 다음에 이벤트가 붙은 메서드를 호출해준다.
+    * 따라서 `init2()`는 트랜잭션이 적용된 것을 확인할 수 있다.
+
 ## 트랜잭션 옵션 소개
 
 ## 예외와 트랜잭션 커밋, 롤백 - 기본
