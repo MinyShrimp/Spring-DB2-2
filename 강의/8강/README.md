@@ -622,6 +622,86 @@ o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.spr
 
 ## 트랜잭션 옵션 소개
 
+### @Transactional
+
+```java
+public @interface Transactional {
+    String value() default "";
+    String transactionManager() default "";
+    
+    Class<? extends Throwable>[] rollbackFor() default {};
+    Class<? extends Throwable>[] noRollbackFor() default {};
+    
+    Propagation propagation() default Propagation.REQUIRED;
+    Isolation isolation() default Isolation.DEFAULT;
+    int timeout() default TransactionDefinition.TIMEOUT_DEFAULT;
+    
+    boolean readOnly() default false;
+    String[] label() default {};
+}
+```
+
+#### value, transactionManager
+
+* 트랜잭션 매니저 선택
+* 트랜잭션 매니저가 하나만 있다면 생략할 수 있다.
+* 두 개 이상이라면 지정해주어야 한다.
+
+#### rollbackFor
+
+* 기본 정책에 추가로 어떤 예외가 발생할 때 롤백할 지 지정
+* rollbackForClassName
+    * 예외 이름을 문자열로 지정
+
+#### noRollbackFor
+
+* rollbackFor 의 반대
+* rollbackForClassName
+
+#### propagation
+
+* 트랜잭션 전파 옵션
+
+#### isolation
+
+* 트랜잭션 격리 수준
+    * READ_UNCOMMITTED
+    * READ_COMMITTED
+    * REPEATABLE_READ
+    * SERIALIZABLE
+* 기본값: 트랜잭션 시스템의 기본 격리 수준 사용
+
+#### timeout
+
+* 트랜잭션 수행 타임 아웃 지정, 초 단위이다.
+* 기본값: 트랜잭션 시스템의 타임아웃 값 사용
+* timeoutString
+
+#### label
+
+* 트랜잭션 애노테이션에 있는 값을 직접 읽어서 어떤 동작을 할지 결정
+
+#### readOnly
+
+* 해당 트랜잭션을 읽기 전용으로 지정
+* 기본값: false
+
+* **프레임워크**
+    * JdbcTemplate은 읽기 전용 트랜잭션 안에서 변경 기능을 실행하면 예외를 던진다.
+    * JPA(하이버네이트)는 읽기 전용 트랜잭션의 경우 커밋 시점에 플러시를 호출하지 않는다.
+    * 읽기 전용이니 변경에 사용되는 플러시를 호출할 필요가 없다.
+    * 추가로 변경이 필요 없으니 변경 감지를 위한 스냅샷 객체도 생성하지 않는다.
+    * 이렇게 JPA에서는 다양한 최적화가 발생한다.
+        * JPA 관련 내용은 JPA를 더 학습해야 이해할 수 있으므로 지금은 이런 것이 있다 정도만 알아두자.
+* **JDBC 드라이버**
+    * 참고로 여기서 설명하는 내용들은 DB와 드라이버 버전에 따라서 다르게 동작하기 때문에 사전에 확인이 필요하다.
+    * 읽기 전용 트랜잭션에서 변경 쿼리가 발생하면 예외를 던진다.
+    * 읽기, 쓰기 (마스터, 슬레이브) 데이터베이스를 구분해서 요청한다.
+    * 읽기 전용 트랜잭션의 경우 읽기 (슬레이브) 데이터베이스의 커넥션을 획득해서 사용한다.
+        * 예) https://dev.mysql.com/doc/connector-j/8.0/en/connector-j-source-replicareplication-connection.html
+* **데이터베이스**
+    * 데이터베이스에 따라 읽기 전용 트랜잭션의 경우 읽기만 하면 되므로, 내부에서 성능 최적화가 발생한다.
+
 ## 예외와 트랜잭션 커밋, 롤백 - 기본
 
 ## 예외와 트랜잭션 커밋, 롤백 - 활용
