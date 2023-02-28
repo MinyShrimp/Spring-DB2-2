@@ -463,6 +463,119 @@ o.s.j.d.DataSourceTransactionManager     : Releasing JDBC Connection [HikariProx
 
 ![img_8.png](img_8.png)
 
+### inner_rollback
+
+```java
+@Test
+void inner_rollback() {
+    log.info("외부 트랜잭션 시작");
+    TransactionStatus outer = txManager.getTransaction(new DefaultTransactionDefinition());
+    log.info("outer.isRollbackOnly() = {}", outer.isRollbackOnly());
+
+    log.info("내부 트랜잭션 시작");
+    TransactionStatus inner = txManager.getTransaction(new DefaultTransactionDefinition());
+    log.info("inner.isRollbackOnly() = {}", inner.isRollbackOnly());
+
+    log.info("내부 트랜잭션 롤백");
+    txManager.rollback(inner);
+    
+    log.info("inner.isRollbackOnly() = {}", inner.isRollbackOnly());
+    log.info("outer.isRollbackOnly() = {}", outer.isRollbackOnly());
+
+    log.info("외부 트랜잭션 커밋");
+    // txManager.commit(outer);
+    assertThatThrownBy(() -> txManager.commit(outer))
+                .isInstanceOf(UnexpectedRollbackException.class);
+}
+```
+
+#### 결과 로그
+
+```
+h.springdb22.propagation.BasicTxTest     : 외부 트랜잭션 시작
+o.s.j.d.DataSourceTransactionManager     : Creating new transaction with name [null]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.j.d.DataSourceTransactionManager     : Acquired Connection [HikariProxyConnection@1772902226 wrapping conn0: url=jdbc:h2:mem:9f893c66-de8c-4b36-a52f-c844c832efab user=SA] for JDBC transaction
+o.s.j.d.DataSourceTransactionManager     : Switching JDBC Connection [HikariProxyConnection@1772902226 wrapping conn0: url=jdbc:h2:mem:9f893c66-de8c-4b36-a52f-c844c832efab user=SA] to manual commit
+h.springdb22.propagation.BasicTxTest     : outer.isRollbackOnly() = false
+
+h.springdb22.propagation.BasicTxTest     : 내부 트랜잭션 시작
+o.s.j.d.DataSourceTransactionManager     : Participating in existing transaction
+h.springdb22.propagation.BasicTxTest     : inner.isRollbackOnly() = false
+
+h.springdb22.propagation.BasicTxTest     : 내부 트랜잭션 롤백
+o.s.j.d.DataSourceTransactionManager     : Participating transaction failed - marking existing transaction as rollback-only
+o.s.j.d.DataSourceTransactionManager     : Setting JDBC transaction [HikariProxyConnection@1772902226 wrapping conn0: url=jdbc:h2:mem:9f893c66-de8c-4b36-a52f-c844c832efab user=SA] rollback-only
+
+h.springdb22.propagation.BasicTxTest     : inner.isRollbackOnly() = true
+h.springdb22.propagation.BasicTxTest     : outer.isRollbackOnly() = true
+
+h.springdb22.propagation.BasicTxTest     : 외부 트랜잭션 커밋
+o.s.j.d.DataSourceTransactionManager     : Global transaction is marked as rollback-only but transactional code requested commit
+o.s.j.d.DataSourceTransactionManager     : Initiating transaction rollback
+o.s.j.d.DataSourceTransactionManager     : Rolling back JDBC transaction on Connection [HikariProxyConnection@1772902226 wrapping conn0: url=jdbc:h2:mem:9f893c66-de8c-4b36-a52f-c844c832efab user=SA]
+o.s.j.d.DataSourceTransactionManager     : Releasing JDBC Connection [HikariProxyConnection@1772902226 wrapping conn0: url=jdbc:h2:mem:9f893c66-de8c-4b36-a52f-c844c832efab user=SA] after transaction
+
+org.springframework.transaction.UnexpectedRollbackException: Transaction rolled back because it has been marked as rollback-only
+```
+
+* 외부 트랜잭션 시작
+    * 물리 트랜잭션을 시작한다.
+* 내부 트랜잭션 시작
+    * `Participating in existing transaction`
+    * 기존 트랜잭션에 참여한다.
+* 내부 트랜잭션 롤백
+    * `Participating transaction failed - marking existing transaction as rollbackonly`
+    * 내부 트랜잭션을 롤백하면 실제 물리 트랜잭션은 롤백하지 않는다.
+    * 대신에 기존 트랜잭션을 **롤백 전용으로 표시**한다.
+* 외부 트랜잭션 커밋
+    * 외부 트랜잭션을 커밋한다.
+    * `Global transaction is marked as rollback-only`
+    * 커밋을 호출했지만, 전체 트랜잭션이 롤백 전용으로 표시되어 있다. 따라서 물리 트랜잭션을 롤백한다.
+
+### 응답 흐름
+
+![img_12.png](img_12.png)
+
+#### 응답 흐름 - 내부 트랜잭션
+
+* 로직 2가 끝나고 트랜잭션 매니저를 통해 내부 트랜잭션을 롤백한다.
+    * 로직 2에 문제가 있어서 롤백한다고 가정한다.
+* 트랜잭션 매니저는 롤백 시점에 신규 트랜잭션 여부에 따라 다르게 동작한다.
+    * 이 경우 신규 트랜잭션이 아니기 때문에 실제 롤백을 호출하지 않는다.
+    * 이 부분이 중요한데, 실제 커넥션에 커밋이나 롤백을 호출하면 물리 트랜잭션이 끝나버린다.
+    * 아직 트랜잭션이 끝난 것이 아니기 때문에 실제 롤백을 호출하면 안된다.
+    * 물리 트랜잭션은 외부 트랜잭션을 종료할 때 까지 이어져야한다.
+* 내부 트랜잭션은 물리 트랜잭션을 롤백하지 않는 대신에 트랜잭션 동기화 매니저에 `rollbackOnly = true`라는 표시를 해둔다.
+
+#### 응답 흐름 - 외부 트랜잭션
+
+* 로직1이 끝나고 트랜잭션 매니저를 통해 외부 트랜잭션을 커밋한다.
+* 트랜잭션 매니저는 커밋 시점에 신규 트랜잭션 여부에 따라 다르게 동작한다.
+    * 외부 트랜잭션은 신규 트랜잭션이다.
+    * 따라서 DB 커넥션에 실제 커밋을 호출해야 한다.
+    * 이때 먼저 트랜잭션 동기화 매니저에 롤백 전용(`rollbackOnly = true`) 표시가 있는지 확인한다.
+    * 롤백 전용 표시가 있으면 물리 트랜잭션을 커밋하는 것이 아니라 롤백한다.
+* 실제 데이터베이스에 롤백이 반영되고, 물리 트랜잭션도 끝난다.
+
+* 트랜잭션 매니저에 커밋을 호출한 개발자 입장에서는 분명 커밋을 기대했는데 롤백 전용 표시로 인해 실제로는 롤백이 되어버렸다.
+    * 이것은 조용히 넘어갈 수 있는 문제가 아니다.
+        * 시스템 입장에서는 커밋을 호출했지만 롤백이 되었다는 것은 분명하게 알려주어야 한다.
+    * 예를 들어서 고객은 주문이 성공했다고 생각했는데, 실제로는 롤백이 되어서 주문이 생성되지 않은 것이다.
+    * 스프링은 이 경우 `UnexpectedRollbackException` 런타임 예외를 던진다.
+        * 그래서 커밋을 시도했지만, 기대하지 않은 롤백이 발생했다는 것을 명확하게 알려준다.
+
+### 정리
+
+* 논리 트랜잭션이 하나라도 롤백되면 물리 트랜잭션은 롤백된다.
+* 내부 논리 트랜잭션이 롤백되면 롤백 전용 마크를 표시한다.
+* 외부 트랜잭션을 커밋할 때 롤백 전용 마크를 확인한다.
+    * 롤백 전용 마크가 표시되어 있으면 물리 트랜잭션을 롤백하고, `UnexpectedRollbackException` 예외를 던진다.
+
+> 참고<br>
+> 애플리케이션 개발에서 중요한 기본 원칙은 모호함을 제거하는 것이다. 개발은 명확해야 한다.
+> 이렇게 커밋을 호출했는데, 내부에서 롤백이 발생한 경우 모호하게 두면 아주 심각한 문제가 발생한다.
+> 이렇게 기대한 결과가 다른 경우 예외를 발생시켜서 명확하게 문제를 알려주는 것이 좋은 설계이다.
+
 ## REQUIRES_NEW
 
 ## 다양한 전파 옵션
