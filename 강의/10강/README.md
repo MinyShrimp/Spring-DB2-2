@@ -815,4 +815,162 @@ o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImp
 
 ## 복구 REQUIRED
 
+### 비즈니스 로직 수정
+
+앞서 회원과 로그를 하나의 트랜잭션으로 묶어서 데이터 정합성 문제를 깔끔하게 해결했다.
+그런데 회원 이력 로그를 DB에 남기는 작업에 가끔 문제가 발생해서 회원 가입 자체가 안되는 경우가 가끔 발생하게 되었다.
+그래서 사용자들이 회원 가입에 실패해서 이탈하는 문제가 발생하기 시작했다.
+
+회원 이력 로그의 경우 여러가지 방법으로 추후에 복구가 가능할 것으로 보인다. 그래서 비즈니스 요구사항이 변경되었다.
+
+#### 회원 가입을 시도한 로그를 남기는데 실패하더라도 회원 가입은 유지되어야 한다.
+
+![img_11.png](img_11.png)
+
+* 단순하게 생각해보면 `LogRepository`에서 예외가 발생하면 그것을 `MemberService`에서 예외를 잡아서 처리하면 될 것 같다.
+* 이렇게 하면 `MemberService`에서 정상 흐름으로 바꿀 수 있기 때문에 `MemberService`의 트랜잭션 AOP 에서 커밋을 수행할 수 있다.
+* 맞다. 뭔가 이상하게 느껴질 것이다. 이 방법이 실패할 것으로 생각했다면, 지금까지 제대로 학습한 것이다.
+
+### 예제
+
+#### MemberService
+
+```java
+@Transactional
+public void joinV2(String username) {
+    Member member = new Member(username);
+    Log logMessage = new Log(username);
+
+    log.info("== MemberRepository 호출 시작 ==");
+    memberRepository.save(member);
+    log.info("== MemberRepository 호출 종료 ==");
+
+    log.info("== LogRepository 호출 시작 ==");
+    try {
+        logRepository.save(logMessage);
+    } catch (RuntimeException e) {
+        log.info("Log 저장에 실패했습니다. logMessage = {}", logMessage.getMessage());
+        log.info("정상 흐름 반환");
+    }
+    log.info("== LogRepository 호출 종료 ==");
+}
+```
+
+#### recoverException_fail
+
+```java
+/**
+ * MemberService    @Transactional:ON
+ * MemberRepository @Transactional:ON
+ * LogRepository    @Transactional:ON
+ */
+@Test
+void recoverException_fail() {
+    // given
+    String username = "로그 예외_recoverException_fail";
+
+    // when
+    // memberService.joinV2(username);
+    assertThatThrownBy(() -> memberService.joinV2(username))
+            .isInstanceOf(UnexpectedRollbackException.class);
+
+    // then: 모든 데이터가 롤백된다.
+    // assertTrue(memberRepository.find(username).isPresent());
+    assertTrue(memberRepository.find(username).isEmpty());
+    assertTrue(logRepository.find(username).isEmpty());
+}
+```
+
+#### 결과 로그
+
+```
+# MemberService.joinV2 호출
+# 트랜잭션 A 시작
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.propagation.MemberService.joinV2]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(1210663640<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@343727b5]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.MemberService.joinV2]
+
+# MemberRepository.save 호출
+# 트랜잭션 B 시작 -> 트랜잭션 A에 참여
+h.springdb22.propagation.MemberService   : == MemberRepository 호출 시작 ==
+o.s.orm.jpa.JpaTransactionManager        : Found thread-bound EntityManager [SessionImpl(1210663640<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Participating in existing transaction
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.MemberRepository.save]
+
+# em.persist() 호출
+h.s.propagation.MemberRepository         : Member 저장
+org.hibernate.SQL                        : select next value for member_seq
+
+# MemberRepository.save 종료
+# 트랜잭션 B 종료 - COMMIT
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.MemberRepository.save]
+h.springdb22.propagation.MemberService   : == MemberRepository 호출 종료 ==
+
+# LogRepository.save 호출
+# 트랜잭션 C 시작 -> 트랜잭션 A에 참여
+h.springdb22.propagation.MemberService   : == LogRepository 호출 시작 ==
+o.s.orm.jpa.JpaTransactionManager        : Found thread-bound EntityManager [SessionImpl(1210663640<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Participating in existing transaction
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.LogRepository.save]
+
+# em.persist() 호출
+h.springdb22.propagation.LogRepository   : Log 저장
+org.hibernate.SQL                        : select next value for log_seq
+
+# RuntimeException 발생
+h.springdb22.propagation.LogRepository   : Log 저장시 예외 발생
+
+# LogRepository.save 종료
+# 트랜잭션 C 종료 - ROLLBACK
+# -> rollbackOnly 설정
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.LogRepository.save] after exception: java.lang.RuntimeException: 예외 발생
+o.s.orm.jpa.JpaTransactionManager        : Participating transaction failed - marking existing transaction as rollback-only
+o.s.orm.jpa.JpaTransactionManager        : Setting JPA transaction on EntityManager [SessionImpl(1210663640<open>)] rollback-only
+cResourceLocalTransactionCoordinatorImpl : JDBC transaction marked for rollback-only (exception provided for stack trace)
+java.lang.Exception: exception just for purpose of providing stack trace ...
+
+# MemberService.joinV2 에서 예외 catch
+h.springdb22.propagation.MemberService   : Log 저장에 실패했습니다. logMessage = 로그 예외_recoverException_fail
+h.springdb22.propagation.MemberService   : 정상 흐름 반환
+h.springdb22.propagation.MemberService   : == LogRepository 호출 종료 ==
+
+# MemberService.joinV2 호출 종료
+# 트랜잭션 A 종료 - COMMIT...?
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.MemberService.joinV2]
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction commit
+o.s.orm.jpa.JpaTransactionManager        : Committing JPA transaction on EntityManager [SessionImpl(1210663640<open>)]
+
+# RollbackOnly가 설정되어 있으므로 ROLLBACK
+# -> ROLLBACK을 해야하는데 COMMIT을 시도했으므로 UnexpectedRollbackException 발생
+cResourceLocalTransactionCoordinatorImpl : On commit, transaction was marked for roll-back only, rolling back
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(1210663640<open>)] after transaction
+```
+
+### 요청 흐름
+
+![img_13.png](img_13.png)
+
+* 내부 트랜잭션에서 `rollbackOnly`를 설정하기 때문에 결과적으로 정상 흐름 처리를 해서 외부 트랜잭션에서 커밋을 호출해도 물리 트랜잭션은 롤백된다.
+* 그리고 `UnexpectedRollbackException`이 던져진다.
+
+![img_12.png](img_12.png)
+
+* `LogRepository`에서 예외가 발생한다.
+    * 예외를 던지면 `LogRepository`의 트랜잭션 AOP가 해당 예외를 받는다.
+* 신규 트랜잭션이 아니므로 물리 트랜잭션을 롤백하지는 않고, 트랜잭션 동기화 매니저에 `rollbackOnly`를 표시한다.
+* 이후 트랜잭션 AOP는 전달 받은 예외를 밖으로 던진다.
+* 예외가 `MemberService`에 던져지고, `MemberService`는 해당 예외를 복구한다. 그리고 정상적으로 리턴한다.
+* 정상 흐름이 되었으므로 `MemberService`의 트랜잭션 AOP는 커밋을 호출한다.
+* 커밋을 호출할 때 신규 트랜잭션이므로 실제 물리 트랜잭션을 커밋해야 한다. 이때 `rollbackOnly`를 체크한다.
+* `rollbackOnly`가 체크 되어 있으므로 물리 트랜잭션을 롤백한다.
+* 트랜잭션 매니저는 `UnexpectedRollbackException` 예외를 던진다.
+* 트랜잭션 AOP도 전달받은 `UnexpectedRollbackException`을 클라이언트에 던진다.
+
+### 정리
+
+* 논리 트랜잭션 중 하나라도 롤백되면 전체 트랜잭션은 롤백된다.
+* 내부 트랜잭션이 롤백 되었는데, 외부 트랜잭션이 커밋되면 `UnexpectedRollbackException` 예외가 발생한다.
+* `rollbackOnly` 상황에서 커밋이 발생하면 `UnexpectedRollbackException` 예외가 발생한다.
+
 ## 복구 REQUIRES_NEW
