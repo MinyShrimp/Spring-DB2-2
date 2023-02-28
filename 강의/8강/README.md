@@ -704,4 +704,91 @@ public @interface Transactional {
 
 ## 예외와 트랜잭션 커밋, 롤백 - 기본
 
+### 예제
+
+#### application.properties
+
+```properties
+# Transaction
+logging.level.org.springframework.transaction.interceptor = trace
+
+# JPA log
+logging.level.org.hibernate.resource.transaction = debug
+logging.level.org.springframework.orm.jpa.JpaTransactionManager = debug
+logging.level.org.springframework.jdbc.datasource.DataSourceTransactionManager = debug
+```
+
+#### runtimeException
+
+```java
+@Transactional
+public void runtimeException() {
+    log.info("call runtimeException");
+    throw new RuntimeException();
+}
+```
+
+```
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.apply.RollbackTest$RollbackService.runtimeException]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(342191077<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@20be890d]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.apply.RollbackTest$RollbackService.runtimeException]
+h.s.apply.RollbackTest$RollbackService   : call runtimeException
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.apply.RollbackTest$RollbackService.runtimeException] after exception: java.lang.RuntimeException
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction rollback
+o.s.orm.jpa.JpaTransactionManager        : Rolling back JPA transaction on EntityManager [SessionImpl(342191077<open>)]
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(342191077<open>)] after transaction
+```
+
+* RuntimeException 이 발생하므로 트랜잭션이 롤백된다.
+
+#### checkedException
+
+```java
+@Transactional
+public void checkedException() throws MyException {
+    log.info("call checkedException");
+    throw new MyException();
+}
+```
+
+```
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.apply.RollbackTest$RollbackService.checkedException]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(2019087133<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@782e6b40]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.apply.RollbackTest$RollbackService.checkedException]
+h.s.apply.RollbackTest$RollbackService   : call checkedException
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.apply.RollbackTest$RollbackService.checkedException] after exception: hello.springdb22.apply.RollbackTest$MyException
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction commit
+o.s.orm.jpa.JpaTransactionManager        : Committing JPA transaction on EntityManager [SessionImpl(2019087133<open>)]
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(2019087133<open>)] after transaction
+```
+
+* MyException 은 Exception 을 상속받은 체크 예외이다. 따라서 예외가 발생해도 트랜잭션이 커밋된다.
+
+#### rollbackFor
+
+```java
+@Transactional(rollbackFor = MyException.class)
+public void rollbackFor() throws MyException {
+    log.info("call rollbackFor");
+    throw new MyException();
+}
+```
+
+```
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.apply.RollbackTest$RollbackService.rollbackFor]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT,-hello.springdb22.apply.RollbackTest$MyException
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(1711445717<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@1d7f2f0a]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.apply.RollbackTest$RollbackService.rollbackFor]
+h.s.apply.RollbackTest$RollbackService   : call rollbackFor
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.apply.RollbackTest$RollbackService.rollbackFor] after exception: hello.springdb22.apply.RollbackTest$MyException
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction rollback
+o.s.orm.jpa.JpaTransactionManager        : Rolling back JPA transaction on EntityManager [SessionImpl(1711445717<open>)]
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(1711445717<open>)] after transaction
+```
+
+* 기본 정책과 무관하게 특정 예외를 강제로 롤백하고 싶으면 `rollbackFor`를 사용하면 된다. (해당 예외의 자식도 포함된다.)
+* `rollbackFor = MyException.class`을 지정했기 때문에 `MyException`이 발생하면 체크 예외이지만 트랜잭션이 롤백된다.
+
 ## 예외와 트랜잭션 커밋, 롤백 - 활용
