@@ -740,7 +740,7 @@ o.s.orm.jpa.JpaTransactionManager        : Rolling back JPA transaction on Entit
 o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(342191077<open>)] after transaction
 ```
 
-* RuntimeException 이 발생하므로 트랜잭션이 롤백된다.
+* `RuntimeException`이 발생하므로 트랜잭션이 롤백된다.
 
 #### checkedException
 
@@ -764,7 +764,7 @@ o.s.orm.jpa.JpaTransactionManager        : Committing JPA transaction on EntityM
 o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(2019087133<open>)] after transaction
 ```
 
-* MyException 은 Exception 을 상속받은 체크 예외이다. 따라서 예외가 발생해도 트랜잭션이 커밋된다.
+* `MyException`은 `Exception`을 상속받은 체크 예외이다. 따라서 예외가 발생해도 트랜잭션이 커밋된다.
 
 #### rollbackFor
 
@@ -792,3 +792,330 @@ o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImp
 * `rollbackFor = MyException.class`을 지정했기 때문에 `MyException`이 발생하면 체크 예외이지만 트랜잭션이 롤백된다.
 
 ## 예외와 트랜잭션 커밋, 롤백 - 활용
+
+### 스프링의 기본 정책
+
+> 스프링은 기본적으로
+> * 체크 예외는 비즈니스 의미가 있을 때 사용하고,
+> * 런타임(언체크) 예외는 복구 불가능한 예외로 가정한다.
+
+참고로 꼭 이런 정책을 따를 필요는 없다. 그때는 앞서 배운 rollbackFor 라는 옵션을 사용해서 체크 예외도 롤백하면 된다.
+
+#### 비즈니스 예외?
+
+주문을 하는데 상황에 따라 다음과 같이 조치한다.
+
+* 정상
+    * 주문시 결제를 성공하면 주문 데이터를 저장하고 결제 상태를 완료로 처리한다.
+* 시스템 예외
+    * 주문시 내부에 복구 불가능한 예외가 발생하면 전체 데이터를 롤백한다.
+* 비즈니스 예외
+    * 주문시 결제 잔고가 부족하면 주문 데이터를 저장하고, 결제 상태를 대기로 처리한다.
+    * 이 경우 **고객에게 잔고 부족을 알리고 별도의 계좌로 입금하도록 안내**한다.
+
+이때 결제 잔고가 부족하면 `NotEnoughMoneyException`이라는 체크 예외가 발생한다고 가정하겠다.
+
+이 예외는 시스템에 문제가 있어서 발생하는 시스템 예외가 아니다.
+시스템은 정상 동작했지만, 비즈니스 상황에서 문제가 되기 때문에 발생한 예외이다.
+더 자세히 설명하자면, 고객의 잔고가 부족한 것은 시스템에 문제가 있는 것이 아니다.
+오히려 시스템은 문제 없이 동작한 것이고, 비즈니스 상황이 예외인 것이다.
+
+이런 예외를 비즈니스 예외라 한다.
+그리고 비즈니스 예외는 매우 중요하고, 반드시 처리해야 하는 경우가 많으므로 체크 예외를 고려할 수 있다.
+
+### 예제
+
+#### application.properties
+
+```properties
+# JPA
+spring.jpa.hibernate.ddl-auto = create
+
+# Transaction Log
+logging.level.org.springframework.transaction.interceptor = trace
+logging.level.org.springframework.orm.jpa.JpaTransactionManager = debug
+logging.level.org.springframework.jdbc.datasource.DataSourceTransactionManager = debug
+
+# Hibernate log
+logging.level.org.hibernate.SQL = debug
+logging.level.org.hibernate.orm.jdbc.bind = trace
+logging.level.org.hibernate.resource.transaction = debug
+```
+
+* spring.jpa.hibernate.ddl-auto
+    * JPA가 Entity의 정보를 기반으로 생성할지 결정
+    * 기본값: none
+    * 운영환경에서는 사용하면 안된다.
+* logging.level.org.hibernate.SQL
+    * 실제로 어떤 SQL 문이 나가는지 확인
+* logging.level.org.hibernate.orm.jdbc.bind
+    * SQL 문에 바인딩된 파라미터를 확인
+* logging.level.org.springframework.orm.jpa.JpaTransactionManager
+    * 현재 트랜잭션 매저가 어떤 행동을 했는지 확인
+
+#### NotEnoughMoneyException
+
+```java
+/**
+ * 고객의 잔고가 부족하면 발생
+ */
+public class NotEnoughMoneyException extends Exception {
+    public NotEnoughMoneyException(String message) {
+        super(message);
+    }
+}
+```
+
+* 결제 잔고가 부족하면 발생하는 비즈니스 예외이다.
+* `Exception`을 상속 받아서 체크 예외가 된다.
+
+#### Order
+
+```java
+@Entity
+@Table(name = "orders")
+@Getter
+public class Order {
+    @Id
+    @GeneratedValue
+    private Long id;
+
+    private String username;
+    private String payStatus;
+
+    public void setUsername(String username) {
+        this.username = username;
+    }
+
+    public void setPayStatus(String payStatus) {
+        this.payStatus = payStatus;
+    }
+}
+```
+
+* JPA를 사용하는 `Order` 엔티티이다.
+* 예제를 단순하게 하기 위해 `@Getter`, `@Setter`를 사용했다.
+    * 참고로 실무에서 엔티티에 `@Setter`를 남발해서 불필요한 변경 포인트를 노출하는 것은 좋지 않다.
+* **주의!**
+    * `@Table(name = "orders")`라고 했는데, 테이블 이름을 지정하지 않으면 테이블 이름이 클래스 이름인 `order`가 된다.
+    * `order`는 데이터베이스 예약어(`order by`)여서 사용할 수 없다.
+    * 그래서 `orders`라는 테이블 이름을 따로 지정해주었다.
+
+#### OrderRepository
+
+```java
+public interface OrderRepository extends JpaRepository<Order, Long> { }
+```
+
+* 스프링 데이터 JPA를 사용한다.
+
+#### OrderService
+
+```java
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+    private final OrderRepository orderRepository;
+
+    @Transactional
+    public void order(Order order) throws NotEnoughMoneyException {
+        log.info("OrderService.order 호출");
+        orderRepository.save(order);
+
+        log.info("결제 프로세스 진입");
+
+        if (order.getUsername().equals("예외")) {
+            log.info("시스템 예외 발생");
+            throw new RuntimeException("시스템 예외");
+        } else if (order.getUsername().equals("잔고부족")) {
+            log.info("잔고 부족 비즈니스 예외 발생");
+            order.setPayStatus("대기");
+            throw new NotEnoughMoneyException("잔고가 부족합니다");
+        } else {
+            log.info("정상 승인");
+            order.setPayStatus("완료");
+        }
+
+        log.info("결제 프로세스 완료");
+    }
+}
+```
+
+여러 상황을 만들기 위해서 사용자 이름( username )에 따라서 처리 프로세스를 다르게 했다.
+
+* 기본
+    * `payStatus`를 완료 상태로 처리하고 정상 처리된다.
+* 예외
+    * `RuntimeException("시스템 예외")` 런타임 예외가 발생한다.
+* 잔고부족
+    * `payStatus`를 대기 상태로 처리한다.
+    * `NotEnoughMoneyException("잔고가 부족합니다")` 체크 예외가 발생한다.
+    * 잔고 부족은 `payStatus`를 대기 상태로 두고, 체크 예외가 발생하지만, `order` 데이터는 커밋되기를 기대한다.
+
+### OrderServiceTest
+
+#### complete
+
+```java
+@Test
+void complete() throws NotEnoughMoneyException {
+    Order order = new Order();
+    order.setUsername("정상");
+
+    orderService.order(order);
+
+    Order findOrder = orderRepository.findById(order.getId()).get();
+    assertThat(findOrder.getPayStatus()).isEqualTo("완료");
+}
+```
+
+```
+# 트랜잭션 시작
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.order.OrderService.order]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(1534365740<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@26888c31]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.order.OrderService.order]
+
+# OrderService 로직 시작
+hello.springdb22.order.OrderService      : OrderService.order 호출
+
+# JpaRepository.save 호출을 위해 DB에서 orders_seq 를 SELECT
+o.s.orm.jpa.JpaTransactionManager        : Found thread-bound EntityManager [SessionImpl(1534365740<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Participating in existing transaction
+o.s.t.i.TransactionInterceptor           : Getting transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+org.hibernate.SQL                        : select next value for orders_seq
+o.s.t.i.TransactionInterceptor           : Completing transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+
+# 로직 진행
+hello.springdb22.order.OrderService      : 결제 프로세스 진입
+hello.springdb22.order.OrderService      : 정상 승인
+hello.springdb22.order.OrderService      : 결제 프로세스 완료
+
+# 함수 호출 종료에 따라 Commit 진행 시작
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.order.OrderService.order]
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction commit
+o.s.orm.jpa.JpaTransactionManager        : Committing JPA transaction on EntityManager [SessionImpl(1534365740<open>)]
+
+# 이제 실제로 INSERT 문이 나간다.
+org.hibernate.SQL                        : insert into orders (pay_status, username, id) values (?, ?, ?)
+org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - [null]
+org.hibernate.orm.jdbc.bind              : binding parameter [2] as [VARCHAR] - [정상]
+org.hibernate.orm.jdbc.bind              : binding parameter [3] as [BIGINT] - [1]
+
+# 중간에 Order Entity의 payStatus의 값이 바뀌었으므로 UPDATE 문도 같이 실행된다.
+org.hibernate.SQL                        : update orders set pay_status=?, username=? where id=?
+org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - [완료]
+org.hibernate.orm.jdbc.bind              : binding parameter [2] as [VARCHAR] - [정상]
+org.hibernate.orm.jdbc.bind              : binding parameter [3] as [BIGINT] - [1]
+
+# 위의 변경사항을 모두 적용하였으므로 트랜잭션 매니저를 종료한다.
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(1534365740<open>)] after transaction
+```
+
+#### runtimeException
+
+```java
+@Test
+void runtimeException() {
+    Order order = new Order();
+    order.setUsername("예외");
+
+    assertThatThrownBy(() -> orderService.order(order))
+            .isInstanceOf(RuntimeException.class);
+
+    Optional<Order> orderOptional = orderRepository.findById(order.getId());
+    assertThat(orderOptional.isEmpty()).isTrue();
+}
+```
+
+```
+# 트랜잭션 시작
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.order.OrderService.order]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(35126588<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@69ac5752]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.order.OrderService.order]
+
+# OrderService 로직 시작
+hello.springdb22.order.OrderService      : OrderService.order 호출
+
+# JpaRepository.save 호출
+o.s.orm.jpa.JpaTransactionManager        : Found thread-bound EntityManager [SessionImpl(35126588<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Participating in existing transaction
+o.s.t.i.TransactionInterceptor           : Getting transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+o.s.t.i.TransactionInterceptor           : Completing transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+
+# 로직 진행
+hello.springdb22.order.OrderService      : 결제 프로세스 진입
+hello.springdb22.order.OrderService      : 시스템 예외 발생
+
+# Runtime 예외 발생, Rollback 을 진행한다.
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.order.OrderService.order] after exception: java.lang.RuntimeException: 시스템 예외
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction rollback
+o.s.orm.jpa.JpaTransactionManager        : Rolling back JPA transaction on EntityManager [SessionImpl(35126588<open>)]
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(35126588<open>)] after transaction
+```
+
+#### bizException
+
+```java
+@Test
+void bizException() {
+    Order order = new Order();
+    order.setUsername("잔고부족");
+
+    try {
+        orderService.order(order);
+        fail("잔고 부족 예외가 발생해야 합니다.");
+    } catch (NotEnoughMoneyException e) {
+        log.info("고객에게 잔고 부족을 알리고 별도의 계좌로 입금하도록 안내");
+    }
+
+    Order findOrder = orderRepository.findById(order.getId()).get();
+    assertThat(findOrder.getPayStatus()).isEqualTo("대기");
+}
+```
+
+```
+# 트랜잭션 시작
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.order.OrderService.order]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(1223960142<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@2697c156]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.order.OrderService.order]
+
+# OrderService 로직 시작
+hello.springdb22.order.OrderService      : OrderService.order 호출
+
+# JpaRepository.save 호출을 위해 DB에서 sequence 를 SELECT
+o.s.orm.jpa.JpaTransactionManager        : Found thread-bound EntityManager [SessionImpl(1223960142<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Participating in existing transaction
+o.s.t.i.TransactionInterceptor           : Getting transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+org.hibernate.SQL                        : select next value for orders_seq
+o.s.t.i.TransactionInterceptor           : Completing transaction for [org.springframework.data.jpa.repository.support.SimpleJpaRepository.save]
+
+# 로직 진행
+hello.springdb22.order.OrderService      : 결제 프로세스 진입
+hello.springdb22.order.OrderService      : 잔고 부족 비즈니스 예외 발생
+
+# NotEnoughMoneyException 예외 발생
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.order.OrderService.order] after exception: hello.springdb22.order.NotEnoughMoneyException: 잔고가 부족합니다
+
+# Checked Exception 이므로 COMMIT 진행
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction commit
+o.s.orm.jpa.JpaTransactionManager        : Committing JPA transaction on EntityManager [SessionImpl(1223960142<open>)]
+
+# 이제 실제로 INSERT 문이 나간다.
+org.hibernate.SQL                        : insert into orders (pay_status, username, id) values (?, ?, ?)
+org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - [null]
+org.hibernate.orm.jdbc.bind              : binding parameter [2] as [VARCHAR] - [잔고부족]
+org.hibernate.orm.jdbc.bind              : binding parameter [3] as [BIGINT] - [2]
+
+# 중간에 Order Entity의 payStatus의 값이 바뀌었으므로 UPDATE 문도 같이 실행된다.
+org.hibernate.SQL                        : update orders set pay_status=?, username=? where id=?
+org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - [대기]
+org.hibernate.orm.jdbc.bind              : binding parameter [2] as [VARCHAR] - [잔고부족]
+org.hibernate.orm.jdbc.bind              : binding parameter [3] as [BIGINT] - [2]
+
+# 위의 변경사항을 모두 적용하였으므로 트랜잭션 매니저를 종료한다.
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(1223960142<open>)] after transaction
+```
