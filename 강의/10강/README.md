@@ -565,6 +565,133 @@ o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImp
 
 ## 전파 커밋
 
+### 트랜잭션 전파
+
+![img_6.png](img_6.png)
+
+스프링은 `@Transactional`이 적용되어 있으면 기본으로 `REQUIRED`라는 전파 옵션을 사용한다.
+이 옵션은 기존 트랜잭션이 없으면 트랜잭션을 생성하고, 기존 트랜잭션이 있으면 기존 트랜잭션에 참여한다.
+참여한다는 뜻은 해당 트랜잭션을 그대로 따른다는 뜻이고, 동시에 같은 동기화 커넥션을 사용한다는 뜻이다.
+
+#### 신규 트랜잭션
+
+![img_7.png](img_7.png)
+
+* 이 경우 외부에 있는 신규 트랜잭션만 실제 물리 트랜잭션을 시작하고 커밋한다.
+* 내부에 있는 트랜잭션은 물리 트랜잭션 시작하거나 커밋하지 않는다.
+
+#### 모든 논리 트랜잭션 커밋
+
+![img_8.png](img_8.png)
+
+* 모든 논리 트랜잭션을 커밋해야 물리 트랜잭션도 커밋된다. 하나라도 롤백되면 물리 트랜잭션은 롤백된다.
+
+### outerTxOn_success
+
+```java
+/**
+ * MemberService    @Transactional:ON
+ * MemberRepository @Transactional:ON
+ * LogRepository    @Transactional:ON
+ */
+@Test
+void outerTxOn_success() {
+    // given
+    String username = "singleTxOn_success";
+
+    // when
+    memberService.joinV1(username);
+
+    // then: 모든 데이터가 정상 저장된다.
+    assertTrue(memberRepository.find(username).isPresent());
+    assertTrue(logRepository.find(username).isPresent());
+}
+```
+
+#### 결과 로그
+
+```
+# MemberService.joinV1 호출
+# 트랜잭션 A 시작
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.propagation.MemberService.joinV1]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(1659772041<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@c335b9]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.MemberService.joinV1]
+
+# MemberRepository.save 호출
+# 트랜잭션 B 시작
+# 전파 옵션이 REQUIRED 이므로 트랜잭션 B는 트랜잭션 A에 참여
+h.springdb22.propagation.MemberService   : == MemberRepository 호출 시작 ==
+o.s.orm.jpa.JpaTransactionManager        : Found thread-bound EntityManager [SessionImpl(1659772041<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Participating in existing transaction
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.MemberRepository.save]
+
+# em.persist() 호출
+h.s.propagation.MemberRepository         : Member 저장
+org.hibernate.SQL                        : select next value for member_seq
+
+# MemberRepository.save 종료
+# 트랜잭션 B 종료
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.MemberRepository.save]
+h.springdb22.propagation.MemberService   : == MemberRepository 호출 종료 ==
+
+# LogRepository.save 호출
+# 트랜잭션 C 시작
+# 전파 옵션이 REQUIRED 이므로 트랜잭션 C는 트랜잭션 A에 참여
+h.springdb22.propagation.MemberService   : == LogRepository 호출 시작 ==
+o.s.orm.jpa.JpaTransactionManager        : Found thread-bound EntityManager [SessionImpl(1659772041<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Participating in existing transaction
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.LogRepository.save]
+
+# em.persist() 호출
+h.springdb22.propagation.LogRepository   : Log 저장
+org.hibernate.SQL                        : select next value for log_seq
+
+# LogRepository.save 종료
+# 트랜잭션 C 종료
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.LogRepository.save]
+h.springdb22.propagation.MemberService   : == LogRepository 호출 종료 ==
+
+# MemberService.joinV1 종료
+# 트랜잭션 A 종료 준비 - COMMIT
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.MemberService.joinV1]
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction commit
+o.s.orm.jpa.JpaTransactionManager        : Committing JPA transaction on EntityManager [SessionImpl(1659772041<open>)]
+
+# INSERT Member
+org.hibernate.SQL                        : insert into member (username, id) values (?, ?)
+org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - [singleTxOn_success]
+org.hibernate.orm.jdbc.bind              : binding parameter [2] as [BIGINT] - [1]
+
+# INSERT Log
+org.hibernate.SQL                        : insert into log (message, id) values (?, ?)
+org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - [singleTxOn_success]
+org.hibernate.orm.jdbc.bind              : binding parameter [2] as [BIGINT] - [1]
+
+# 트랜잭션 A 종료
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(1659772041<open>)] after transaction
+```
+
+#### 실행 흐름
+
+![img_9.png](img_9.png)
+
+* 클라이언트 A(여기서는 테스트 코드)가 `MemberService`를 호출하면서 트랜잭션 AOP가 호출된다.
+    * 여기서 신규 트랜잭션이 생성되고, 물리 트랜잭션도 시작한다.
+* `MemberRepository`를 호출하면서 트랜잭션 AOP가 호출된다.
+    * 이미 트랜잭션이 있으므로 기존 트랜잭션에 참여한다.
+* `MemberRepository`의 로직 호출이 끝나고 정상 응답하면 트랜잭션 AOP가 호출된다.
+    * 트랜잭션 AOP는 정상 응답이므로 트랜잭션 매니저에 커밋을 요청한다.
+    * 이 경우 신규 트랜잭션이 아니므로 실제 커밋을 호출하지 않는다.
+* `LogRepository`를 호출하면서 트랜잭션 AOP가 호출된다.
+    * 이미 트랜잭션이 있으므로 기존 트랜잭션에 참여한다.
+* `LogRepository`의 로직 호출이 끝나고 정상 응답하면 트랜잭션 AOP가 호출된다.
+    * 트랜잭션 AOP는 정상 응답이므로 트랜잭션 매니저에 커밋을 요청한다.
+    * 이 경우 신규 트랜잭션이 아니므로 실제 커밋(물리 커밋)을 호출하지 않는다.
+* `MemberService`의 로직 호출이 끝나고 정상 응답하면 트랜잭션 AOP가 호출된다.
+    * 트랜잭션 AOP는 정상 응답이므로 트랜잭션 매니저에 커밋을 요청한다.
+    * 이 경우 신규 트랜잭션이므로 물리 커밋을 호출한다.
+
 ## 전파 롤백
 
 ## 복구 REQUIRED
