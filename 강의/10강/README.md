@@ -448,6 +448,121 @@ org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - 
 
 ## 단일 트랜잭션
 
+### 예제
+
+#### MemberService, Repositories
+
+```java
+@Transactional
+public void joinV1(String username) { ... }
+
+// @Transactional
+public void save(Log logMessage) { ... }
+
+// @Transactional
+public void save(Member member) { ... }
+```
+
+* `MemberService`에만 `@Transactional` 코드를 추가하자.
+* `MemberRepository`, `LogRepository`의 `@Transactional` 코드를 제거하자.
+
+#### singleTx
+
+```java
+/**
+ * MemberService    @Transactional:ON
+ * MemberRepository @Transactional:OFF
+ * LogRepository    @Transactional:OFF
+ */
+@Test
+void singleTx() {
+    // given
+    String username = "singleTx";
+
+    // when
+    memberService.joinV1(username);
+
+    // then: 모든 데이터가 정상 저장된다.
+    assertTrue(memberRepository.find(username).isPresent());
+    assertTrue(logRepository.find(username).isEmpty());
+}
+```
+
+#### 결과 로그
+
+```
+# MemberService.joinV1 호출
+# 트랜잭션 시작
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.propagation.MemberService.joinV1]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(1659772041<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@c335b9]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.MemberService.joinV1]
+
+# em.persist(member) 호출
+h.springdb22.propagation.MemberService   : == MemberRepository 호출 시작 ==
+h.s.propagation.MemberRepository         : Member 저장
+org.hibernate.SQL                        : select next value for member_seq
+h.springdb22.propagation.MemberService   : == MemberRepository 호출 종료 ==
+
+# em.persist(logMessage) 호출
+h.springdb22.propagation.MemberService   : == LogRepository 호출 시작 ==
+h.springdb22.propagation.LogRepository   : Log 저장
+org.hibernate.SQL                        : select next value for log_seq
+h.springdb22.propagation.MemberService   : == LogRepository 호출 종료 ==
+
+# MemberService.joinV1 호출 종료
+# 트랜잭션 종료 준비 - COMMIT
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.MemberService.joinV1]
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction commit
+o.s.orm.jpa.JpaTransactionManager        : Committing JPA transaction on EntityManager [SessionImpl(1659772041<open>)]
+
+# INSERT Member 
+org.hibernate.SQL                        : insert into member (username, id) values (?, ?)
+org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - [singleTx]
+org.hibernate.orm.jdbc.bind              : binding parameter [2] as [BIGINT] - [1]
+
+# INSERT Log
+org.hibernate.SQL                        : insert into log (message, id) values (?, ?)
+org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - [singleTx]
+org.hibernate.orm.jdbc.bind              : binding parameter [2] as [BIGINT] - [1]
+
+# 트랜잭션 종료
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(1659772041<open>)] after transaction
+```
+
+### 흐릉 정리
+
+![img_2.png](img_2.png)
+
+* 이렇게 하면 `MemberService`를 시작할 때 부터 종료할 때 까지의 모든 로직을 하나의 트랜잭션으로 묶을 수 있다.
+    * 물론 `MemberService`가 `MemberRepository`, `LogRepository`를 호출하므로 이 로직들은 같은 트랜잭션을 사용한다.
+* `MemberService`만 트랜잭션을 처리하기 때문에 앞서 배운 복잡한 것을 고민할 필요가 없다.
+    * 논리 트랜잭션, 물리 트랜잭션, 외부 트랜잭션, 내부 트랜잭션, `rollbackOnly`, 신규 트랜잭션, 트랜잭션 전파
+* 아주 단순하고 깔끔하게 트랜잭션을 묶을 수 있다.
+
+![img_3.png](img_3.png)
+
+* `@Transactional`이 `MemberService`에만 붙어있기 때문에 여기에만 트랜잭션 AOP가 적용된다.
+    * `MemberRepository`, `LogRepository`는 트랜잭션 AOP가 적용되지 않는다.
+* `MemberService`의 시작부터 끝까지, 관련 로직은 해당 트랜잭션이 생성한 커넥션을 사용하게 된다.
+    * `MemberService`가 호출하는 `MemberRepository`, `LogRepository`도 같은 커넥션을 사용하면서 자연스럽게 트랜잭션 범위에 포함된다.
+
+### 각각 트랜잭션이 필요한 상황
+
+![img_4.png](img_4.png)
+
+#### 트랜잭션 적용 범위
+
+![img_5.png](img_5.png)
+
+* 클라이언트 A는 `MemberService`부터 `MemberRepository`, `LogRepository`를 모두 하나의 트랜잭션으로 묶고 싶다.
+* 클라이언트 B는 `MemberRepository`만 호출하고 여기에만 트랜잭션을 사용하고 싶다.
+* 클라이언트 C는 `LogRepository`만 호출하고 여기에만 트랜잭션을 사용하고 싶다.
+
+* 클라이언트 A만 생각하면 `MemberService`에 트랜잭션 코드를 남기고,
+  `MemberRepository`, `LogRepository`의 트랜잭션 코드를 제거하면 앞서 배운 것 처럼 깔끔하게 하나의 트랜잭션을 적용할 수 있다.
+* 하지만 이렇게 되면 클라이언트 B, C가 호출하는 `MemberRepository`, `LogRepository`에는 트랜잭션을 적용할 수 없다.
+
 ## 전파 커밋
 
 ## 전파 롤백

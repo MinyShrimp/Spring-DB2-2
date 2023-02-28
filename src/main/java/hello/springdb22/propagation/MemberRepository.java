@@ -4,7 +4,6 @@ import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Repository;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
 
@@ -14,7 +13,7 @@ import java.util.Optional;
 public class MemberRepository {
     private final EntityManager em;
 
-    @Transactional
+    // @Transactional
     public void save(Member member) {
         log.info("Member 저장");
         em.persist(member);
