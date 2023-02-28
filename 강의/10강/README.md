@@ -862,7 +862,7 @@ public void joinV2(String username) {
 /**
  * MemberService    @Transactional:ON
  * MemberRepository @Transactional:ON
- * LogRepository    @Transactional:ON
+ * LogRepository    @Transactional:ON Exception
  */
 @Test
 void recoverException_fail() {
@@ -974,3 +974,166 @@ o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImp
 * `rollbackOnly` 상황에서 커밋이 발생하면 `UnexpectedRollbackException` 예외가 발생한다.
 
 ## 복구 REQUIRES_NEW
+
+### 예제
+
+#### LogRepository
+
+```java
+@Transactional(
+        propagation = Propagation.REQUIRES_NEW
+)
+public void save(Log logMessage) { ... }
+```
+
+#### recoverException_success
+
+```java
+/**
+ * MemberService    @Transactional:ON
+ * MemberRepository @Transactional:ON
+ * LogRepository    @Transactional(REQUIRES_NEW) Exception
+ */
+@Test
+void recoverException_success() {
+    // given
+    String username = "로그 예외_recoverException_success";
+
+    // when
+    memberService.joinV2(username);
+
+    // then: Member 저장, Log 롤백
+    assertTrue(memberRepository.find(username).isPresent());
+    assertTrue(logRepository.find(username).isEmpty());
+}
+```
+
+#### 결과 로그
+
+```
+# MemberService.joinV2 호출
+# 트랜잭션 A 시작
+o.s.orm.jpa.JpaTransactionManager        : Creating new transaction with name [hello.springdb22.propagation.MemberService.joinV2]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(958468958<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@59cde35]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.MemberService.joinV2]
+
+# MemberRepository.save 호출
+# 트랜잭션 B 시작 -> 트랜잭션 A에 참여
+h.springdb22.propagation.MemberService   : == MemberRepository 호출 시작 ==
+o.s.orm.jpa.JpaTransactionManager        : Found thread-bound EntityManager [SessionImpl(958468958<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Participating in existing transaction
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.MemberRepository.save]
+
+# em.persist() 호출
+h.s.propagation.MemberRepository         : Member 저장
+org.hibernate.SQL                        : select next value for member_seq
+
+# MemberRepository.save 호출 종료
+# 트랜잭션 B 종료 - COMMIT
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.MemberRepository.save]
+h.springdb22.propagation.MemberService   : == MemberRepository 호출 종료 ==
+
+# LogRepository.save 호출
+# 트랜잭션 C 시작
+# - Propagation이 REQUIRES_NEW으로 설정되어있으므로 새로운 트랜잭션 시작
+# - 기존의 트랜잭션 A는 잠시 멈춘다.
+h.springdb22.propagation.MemberService   : == LogRepository 호출 시작 ==
+o.s.orm.jpa.JpaTransactionManager        : Found thread-bound EntityManager [SessionImpl(958468958<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Suspending current transaction, creating new transaction with name [hello.springdb22.propagation.LogRepository.save]
+o.s.orm.jpa.JpaTransactionManager        : Opened new EntityManager [SessionImpl(1391983205<open>)] for JPA transaction
+o.s.orm.jpa.JpaTransactionManager        : Exposing JPA transaction as JDBC [org.springframework.orm.jpa.vendor.HibernateJpaDialect$HibernateConnectionHandle@62c6db99]
+o.s.t.i.TransactionInterceptor           : Getting transaction for [hello.springdb22.propagation.LogRepository.save]
+
+# em.persist() 호출
+h.springdb22.propagation.LogRepository   : Log 저장
+org.hibernate.SQL                        : select next value for log_seq
+
+# RuntimeException 발생
+# LogRepository.save 호출 종료
+h.springdb22.propagation.LogRepository   : Log 저장시 예외 발생
+
+# 트랜잭션 C 종료 준비 - ROLLBACK
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.LogRepository.save] after exception: java.lang.RuntimeException: 예외 발생
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction rollback
+o.s.orm.jpa.JpaTransactionManager        : Rolling back JPA transaction on EntityManager [SessionImpl(1391983205<open>)]
+
+# 트랜잭션 C 종료
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(1391983205<open>)] after transaction
+
+# 트랜잭션 A 재시작
+o.s.orm.jpa.JpaTransactionManager        : Resuming suspended transaction after completion of inner transaction
+
+# MemberService.joinV2 - 예외 catch
+h.springdb22.propagation.MemberService   : Log 저장에 실패했습니다. logMessage = 로그 예외_recoverException_success
+h.springdb22.propagation.MemberService   : 정상 흐름 반환
+h.springdb22.propagation.MemberService   : == LogRepository 호출 종료 ==
+
+# MemberService.joinV2 호출 종료
+# 트랜잭션 A 종료 준비 - COMMIT
+o.s.t.i.TransactionInterceptor           : Completing transaction for [hello.springdb22.propagation.MemberService.joinV2]
+o.s.orm.jpa.JpaTransactionManager        : Initiating transaction commit
+o.s.orm.jpa.JpaTransactionManager        : Committing JPA transaction on EntityManager [SessionImpl(958468958<open>)]
+
+# INSERT Member
+org.hibernate.SQL                        : insert into member (username, id) values (?, ?)
+org.hibernate.orm.jdbc.bind              : binding parameter [1] as [VARCHAR] - [로그 예외_recoverException_success]
+org.hibernate.orm.jdbc.bind              : binding parameter [2] as [BIGINT] - [1]
+
+# 트랜잭션 A 종료
+o.s.orm.jpa.JpaTransactionManager        : Closing JPA EntityManager [SessionImpl(958468958<open>)] after transaction
+```
+
+### 흐름
+
+#### REQUIRES_NEW - 물리 트랜잭션 분리
+
+![img_15.png](img_15.png)
+
+* `MemberRepository`는 `REQUIRED` 옵션을 사용한다. 따라서 기존 트랜잭션에 참여한다.
+* `LogRepository`의 트랜잭션 옵션에 `REQUIRES_NEW`를 사용했다.
+* `REQUIRES_NEW`는 항상 새로운 트랜잭션을 만든다. 따라서 해당 트랜잭션 안에서는 DB 커넥션도 별도로 사용하게 된다.
+
+#### REQUIRES_NEW - 복구
+
+![img_16.png](img_16.png)
+
+* `REQUIRES_NEW`를 사용하게 되면 물리 트랜잭션 자체가 완전히 분리되어 버린다.
+* 그리고 `REQUIRES_NEW`는 신규 트랜잭션이므로 `rollbackOnly` 표시가 되지 않는다.
+* 그냥 해당 트랜잭션이 물리 롤백되고 끝난다.
+
+#### REQUIRES_NEW - 자세히
+
+![img_17.png](img_17.png)
+
+* `LogRepository`에서 예외가 발생한다.
+    * 예외를 던지면 `LogRepository`의 트랜잭션 AOP가 해당 예외를 받는다.
+* `REQUIRES_NEW`를 사용한 신규 트랜잭션이므로 물리 트랜잭션을 롤백한다.
+    * 물리 트랜잭션을 롤백했으므로 `rollbackOnly`를 표시하지 않는다.
+    * 여기서 `REQUIRES_NEW`를 사용한 물리 트랜잭션은 롤백되고 완전히 끝이 나버린다.
+* 이후 트랜잭션 AOP는 전달 받은 예외를 밖으로 던진다.
+* 예외가 `MemberService`에 던져지고, `MemberService`는 해당 예외를 복구한다. 그리고 정상적으로 리턴한다.
+* 정상 흐름이 되었으므로 `MemberService`의 트랜잭션 AOP는 커밋을 호출한다.
+* 커밋을 호출할 때 신규 트랜잭션이므로 실제 물리 트랜잭션을 커밋해야 한다. 이때 `rollbackOnly`를 체크한다.
+* `rollbackOnly`가 없으므로 물리 트랜잭션을 커밋한다.
+* 이후 정상 흐름이 반환된다.
+
+### 정리
+
+* 논리 트랜잭션은 하나라도 롤백되면 관련된 물리 트랜잭션은 롤백되어 버린다.
+* 이 문제를 해결하려면 `REQUIRES_NEW`를 사용해서 트랜잭션을 분리해야 한다.
+* 참고로 예제를 단순화 하기 위해 `MemberService`가 `MemberRepository`, `LogRepository`만 호출하지만
+    * 실제로는 더 많은 리포지토리들을 호출하고 그 중에 `LogRepository`만 트랜잭션을 분리한다고 생각해보면 이해하는데 도움이 될 것이다.
+
+### 주의
+
+* `REQUIRES_NEW`를 사용하면 하나의 HTTP 요청에 동시에 2개의 데이터베이스 커넥션을 사용하게 된다.
+* 따라서 성능이 중요한 곳에서는 이런 부분을 주의해서 사용해야 한다.
+* `REQUIRES_NEW`를 사용하지 않고 문제를 해결할 수 있는 단순한 방법이 있다면, 그 방법을 선택하는 것이 더 좋다.
+
+#### 예시 - 구조 변경
+
+![img_14.png](img_14.png)
+
+* 이렇게 하면 HTTP 요청에 동시에 2개의 커넥션을 사용하지는 않는다. 순차적으로 사용하고 반환하게 된다.
+* 물론 구조상 `REQUIRES_NEW`를 사용하는 것이 더 깔끔한 경우도 있으므로 각각의 장단점을 이해하고 적절하게 선택해서 사용하면 된다.

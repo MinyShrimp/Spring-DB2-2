@@ -116,7 +116,7 @@ class MemberServiceTest {
     /**
      * MemberService    @Transactional:ON
      * MemberRepository @Transactional:ON
-     * LogRepository    @Transactional:ON
+     * LogRepository    @Transactional:ON Exception
      */
     @Test
     void recoverException_fail() {
@@ -131,6 +131,24 @@ class MemberServiceTest {
         // then: 모든 데이터가 롤백된다.
         // assertTrue(memberRepository.find(username).isPresent());
         assertTrue(memberRepository.find(username).isEmpty());
+        assertTrue(logRepository.find(username).isEmpty());
+    }
+
+    /**
+     * MemberService    @Transactional:ON
+     * MemberRepository @Transactional:ON
+     * LogRepository    @Transactional(REQUIRES_NEW) Exception
+     */
+    @Test
+    void recoverException_success() {
+        // given
+        String username = "로그 예외_recoverException_success";
+
+        // when
+        memberService.joinV2(username);
+
+        // then: Member 저장, Log 롤백
+        assertTrue(memberRepository.find(username).isPresent());
         assertTrue(logRepository.find(username).isEmpty());
     }
 }
